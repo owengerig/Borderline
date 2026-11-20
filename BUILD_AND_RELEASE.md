@@ -61,40 +61,24 @@ Unity on Windows can *generate* the Xcode project, but compiling, signing and up
 4. In App Store Connect, the build goes to **TestFlight**: internal testers right away, external testers after a short beta review.
 5. Fill in **App Privacy** ("nutrition labels"), screenshots, the support and privacy URLs, and the age rating, then **Submit for Review**.
 
-## 3. CI/CD (recommended once the prototype is stable)
+## 3. Cloud builds (GitHub Actions)
 
-[GameCI](https://game.ci) runs Unity builds in GitHub Actions. A typical setup:
+Two manual workflows, the same as Card Combat's (Actions tab → choose one → **Run workflow**):
 
-```yaml
-# .github/workflows/android.yml  (starting point – check GameCI docs for current inputs)
-name: Android build
-on: { push: { tags: ['v*'] } }
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with: { lfs: true }
-      - uses: actions/cache@v4
-        with: { path: Library, key: Library-Android }
-      - uses: game-ci/unity-builder@v4
-        env:
-          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
-          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
-          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
-        with:
-          targetPlatform: Android
-          androidExportType: androidAppBundle
-          androidKeystoreName: borderline.keystore
-          androidKeystoreBase64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          androidKeystorePass: ${{ secrets.ANDROID_KEYSTORE_PASS }}
-          androidKeyaliasName: ${{ secrets.ANDROID_KEYALIAS_NAME }}
-          androidKeyaliasPass: ${{ secrets.ANDROID_KEYALIAS_PASS }}
-      - uses: actions/upload-artifact@v4
-        with: { name: android-aab, path: build/Android }
-```
+- **Build Android APK** (`.github/workflows/build-android.yml`): GameCI builds the APK on Linux and publishes it
+  under **Releases** as `v<version>-build<n>`, signed with the upload keystore when the `ANDROID_KEY…` secrets are
+  set.
+- **Build iOS app** (`.github/workflows/build-ios.yml`): Unity exports the Xcode project on Linux, then a macOS job
+  builds it. Without signing secrets you get a Simulator build; with them, a signed `.ipa` (ad hoc, App Store or
+  development, chosen when you run it), published as `ios-v<version>-build<n>`.
 
-For iOS: one job on `ubuntu-latest` with `targetPlatform: iOS` exports the Xcode project. A second job on a `macos` runner then builds, signs and uploads it to TestFlight with **fastlane** (`match` for certificates, `pilot` for upload).
+Both skip the build when nothing in `Assets/`, `Packages/` or `ProjectSettings/` changed since the last release
+(tick "Build even if nothing changed" to override), and both **stop with an error until `ProjectSettings/` is
+committed** (see `SETUP.md`).
+
+Secrets (pushed by OG Software's `push-github-secrets.ps1`): `UNITY_LICENSE`, `UNITY_EMAIL`, `UNITY_PASSWORD`; the four
+`ANDROID_KEY…` secrets (alias `borderline`); for signed iOS builds `IOS_CERTIFICATE_P12_BASE64`,
+`IOS_CERTIFICATE_PASSWORD`, `IOS_PROVISIONING_PROFILE_BASE64` and `IOS_TEAM_ID`.
 
 ## 4. The release ladder (how the big mobile strategy games ship)
 

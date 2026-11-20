@@ -1,0 +1,402 @@
+# Builds the iOS app in the cloud and publishes it as a GitHub Release.
+#
+# Two jobs, because Unity makes an Xcode project and only a Mac can build that:
+#   1. Linux (GameCI): Unity builds the Xcode project (same license secrets as the Android workflow).
+#   2. macOS: Xcode builds the app from it.
+#
+# Two kinds of build:
+#   - No signing secrets: a Simulator build (Borderline-…-simulator.zip). It runs in Xcode's iOS Simulator on a
+#     Mac, not on an iPhone, and needs no Apple Developer account. Good for checking the game builds for iOS.
+#   - With signing secrets: a signed .ipa for real devices, exported for the method you pick when running the
+#     workflow (release-testing = ad hoc, for registered devices; app-store-connect = for TestFlight / App Store
+#     upload; debugging = development).
+#
+# One-time setup (repo Settings → Secrets and variables → Actions → New repository secret):
+#   UNITY_LICENSE, UNITY_EMAIL, UNITY_PASSWORD   the same as for the Android workflow (required)
+#   IOS_CERTIFICATE_P12_BASE64        your Apple signing certificate + private key, exported from Keychain as .p12,
+#                                     then base64-encoded (optional: without it you get a Simulator build)
+#   IOS_CERTIFICATE_PASSWORD          the .p12 password
+#   IOS_PROVISIONING_PROFILE_BASE64   the provisioning profile for com.ogsoftware.borderline, base64-encoded; its type
+#                                     must match the export method (Ad Hoc, App Store or Development)
+#   IOS_TEAM_ID                       your 10-character Apple Developer Team ID
+#   IOS_CODE_SIGN_IDENTITY            optional, default "Apple Distribution" ("Apple Development" for debugging)
+#
+# Release: tagged ios-v<version>-build<build> (from Player Settings, see Project Settings → Player), marked as a
+# pre-release. Skips unneeded builds like the Android workflow: if nothing in Assets/, Packages/ or ProjectSettings/
+# changed since the latest iOS release, it stops in a few seconds (tick "Build even if nothing changed" to build).
+
+name: Build iOS app
+
+# manual only: Actions tab → "Build iOS app" → Run workflow
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build even if nothing changed since the latest iOS release
+        type: boolean
+        default: false
+      export_method:
+        description: Signed builds only — how the .ipa is exported
+        type: choice
+        options: [release-testing, app-store-connect, debugging]
+        default: release-testing
+
+permissions:
+  contents: write   # to create the release
+
+concurrency:
+  group: ios-build
+  cancel-in-progress: true
+
+jobs:
+  # Is a new build needed? (a few seconds)
+  check:
+    name: Check for changes
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - name: Checkout repository (with history and tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compare with the latest iOS release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          if [ "$FORCE" = "true" ]; then
+            echo "Build forced."; echo "build=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          LAST=$(gh release list --exclude-drafts --limit 100 --json tagName --jq '[.[] | select(.tagName | startswith("ios-"))][0].tagName // empty' 2>/dev/null || true)
+          if [ -z "$LAST" ] || ! git rev-parse -q --verify "refs/tags/$LAST" > /dev/null; then
+            echo "No earlier iOS release found: building."; echo "build=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          BUILT=$(git rev-list -n 1 "refs/tags/$LAST")
+          echo "Latest release: $LAST, built from ${BUILT::7}; this run: ${GITHUB_SHA::7}"
+          CHANGED=$(git diff --name-only "$BUILT" "$GITHUB_SHA" -- Assets Packages ProjectSettings)
+          if [ -z "$CHANGED" ]; then
+            echo "::notice title=No new build needed::Nothing in Assets/, Packages/ or ProjectSettings/ changed since $LAST. Run again with 'Build even if nothing changed' to build anyway."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Changed since $LAST:"; echo "$CHANGED" | head -50
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── 1. Unity: make the Xcode project ──
+  xcodeProject:
+    name: Build Xcode project (Unity)
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      code: ${{ steps.version.outputs.code }}
+      tag: ${{ steps.version.outputs.tag }}
+      bundle: ${{ steps.version.outputs.bundle }}
+      signed: ${{ steps.signing.outputs.signed }}
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          swap-storage: false
+
+      # IL2CPP needs more memory than the runner has (see the Android workflow)
+      - name: Add swap space
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 6G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+          df -h / /mnt
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check the Unity project settings are in git
+        run: |
+          if [ ! -f ProjectSettings/ProjectSettings.asset ] || [ ! -f ProjectSettings/ProjectVersion.txt ]; then
+            echo "::error::ProjectSettings/ isn't in the repo yet. Open the project in Unity, set it up as SETUP.md describes (bundle ID com.ogsoftware.borderline, version 0.1.0), then commit ProjectSettings/ and Packages/."
+            exit 1
+          fi
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(grep -m1 '^  bundleVersion:' ProjectSettings/ProjectSettings.asset | awk '{print $2}')
+          CODE=$(awk '/^  buildNumber:/{f=1;next} f&&/^    iPhone:/{print $2;exit} f&&!/^    /{exit}' ProjectSettings/ProjectSettings.asset)
+          CODE=${CODE:-1}
+          BUNDLE=$(awk '/^  applicationIdentifier:/{f=1;next} f&&/^    iPhone:/{print $2;exit} f&&!/^    /{exit}' ProjectSettings/ProjectSettings.asset)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "bundle=$BUNDLE" >> "$GITHUB_OUTPUT"
+          echo "tag=ios-v$VERSION-build$CODE" >> "$GITHUB_OUTPUT"
+          echo "Version $VERSION, build $CODE, bundle $BUNDLE"
+
+      - name: Check for signing secrets
+        id: signing
+        env:
+          P12: ${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}
+          PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          TEAM: ${{ secrets.IOS_TEAM_ID }}
+        run: |
+          if [ -n "$P12" ] && [ -n "$PROFILE" ] && [ -n "$TEAM" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No iOS signing secrets: building for the iOS Simulator only (not installable on an iPhone)."
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Unity bakes the SDK (device or Simulator) and the signing into the Xcode project, so set them for this build
+      # only (the changes aren't committed). Signing goes on the app target only; UnityFramework must not get a
+      # provisioning profile, which is why it's done here and not with xcodebuild overrides.
+      - name: Set iOS build settings
+        env:
+          SIGNED: ${{ steps.signing.outputs.signed }}
+          PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          TEAM: ${{ secrets.IOS_TEAM_ID }}
+          METHOD: ${{ inputs.export_method }}
+        run: |
+          set -euo pipefail
+          PS=ProjectSettings/ProjectSettings.asset
+          if [ "$SIGNED" = "true" ]; then
+            printf '%s' "$PROFILE" | base64 -d > "$RUNNER_TEMP/profile.mobileprovision"
+            openssl smime -inform der -verify -noverify -in "$RUNNER_TEMP/profile.mobileprovision" -out "$RUNNER_TEMP/profile.plist" 2>/dev/null \
+              || openssl cms -inform der -verify -noverify -in "$RUNNER_TEMP/profile.mobileprovision" -out "$RUNNER_TEMP/profile.plist"
+            UUID=$(grep -A1 '<key>UUID</key>' "$RUNNER_TEMP/profile.plist" | tail -1 | sed -E 's/.*<string>(.*)<\/string>.*/\1/')
+            [ -n "$UUID" ] || { echo "::error::Couldn't read the provisioning profile's UUID"; exit 1; }
+            # Unity's profile types: 1 = development, 2 = distribution (ad hoc / App Store)
+            TYPE=2; [ "$METHOD" = "debugging" ] && TYPE=1
+            sed -i -E "s/^(  appleDeveloperTeamID:).*/\1 $TEAM/" "$PS"
+            sed -i -E "s/^(  iOSManualSigningProvisioningProfileID:).*/\1 $UUID/" "$PS"
+            sed -i -E "s/^(  iOSManualSigningProvisioningProfileType:).*/\1 $TYPE/" "$PS"
+            sed -i -E "s/^(  appleEnableAutomaticSigning:).*/\1 0/" "$PS"
+            sed -i -E "s/^(  iPhoneSdkVersion:).*/\1 988/" "$PS"
+            echo "Device build, signed with profile $UUID (type $TYPE)"
+          else
+            # Simulator SDK, for both Intel and Apple Silicon Macs
+            sed -i -E "s/^(  iPhoneSdkVersion:).*/\1 989/" "$PS"
+            sed -i -E "s/^(  iOSSimulatorArchitecture:).*/\1 2/" "$PS"
+            echo "Simulator build"
+          fi
+          grep -E '^  (iPhoneSdkVersion|iOSSimulatorArchitecture|appleDeveloperTeamID|iOSManualSigningProvisioningProfile(ID|Type)|appleEnableAutomaticSigning):' "$PS"
+
+      - name: Restore Unity Library
+        uses: actions/cache/restore@v4
+        with:
+          path: Library
+          key: Library-iOS-${{ github.run_id }}
+          restore-keys: |
+            Library-iOS-
+
+      - name: Build with Unity
+        id: build
+        uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          targetPlatform: iOS
+          buildName: Borderline
+          # keep the game's own version numbers (Player Settings) instead of GameCI's git-based ones
+          versioning: Custom
+          version: ${{ steps.version.outputs.version }}
+
+      - name: Save Unity Library
+        if: always() && steps.build.outcome != 'skipped'
+        uses: actions/cache/save@v4
+        with:
+          path: Library
+          key: Library-iOS-${{ github.run_id }}
+
+      # tar keeps the scripts in the Xcode project executable (artifacts on their own drop file permissions)
+      - name: Pack the Xcode project
+        run: |
+          set -euo pipefail
+          PROJ=$(dirname "$(find build/iOS -maxdepth 3 -name 'Unity-iPhone.xcodeproj' | head -n1)")
+          [ -n "$PROJ" ] && [ "$PROJ" != "." ] || { echo "::error::Unity didn't produce an Xcode project"; exit 1; }
+          echo "Xcode project: $PROJ"
+          sudo chown -R "$(id -u):$(id -g)" build
+          tar -C "$PROJ" -czf xcode-project.tgz .
+          ls -la xcode-project.tgz
+
+      - name: Upload the Xcode project
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcode-project
+          path: xcode-project.tgz
+          retention-days: 3
+          compression-level: 0
+
+  # ── 2. Xcode: build the app ──
+  app:
+    name: Build iOS app (Xcode)
+    needs: xcodeProject
+    runs-on: macos-26
+    steps:
+      - name: Select Xcode 26
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$XCODE" ]; then sudo xcode-select -s "$XCODE"; fi
+          xcodebuild -version
+
+      - name: Download the Xcode project
+        uses: actions/download-artifact@v4
+        with:
+          name: xcode-project
+
+      - name: Unpack
+        run: |
+          mkdir -p xcode
+          tar -C xcode -xzf xcode-project.tgz
+          rm xcode-project.tgz
+          ls xcode
+
+      # Unity only adds a Podfile when a package needs CocoaPods; then the workspace must be built.
+      - name: Find the Xcode project
+        id: project
+        working-directory: xcode
+        run: |
+          if [ -f Podfile ]; then
+            pod install --repo-update
+            echo "args=-workspace Unity-iPhone.xcworkspace" >> "$GITHUB_OUTPUT"
+          else
+            echo "args=-project Unity-iPhone.xcodeproj" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── unsigned: Simulator build ──
+      - name: Build for the Simulator
+        if: needs.xcodeProject.outputs.signed == 'false'
+        working-directory: xcode
+        env:
+          TAG: ${{ needs.xcodeProject.outputs.tag }}
+        run: |
+          set -euo pipefail
+          xcodebuild ${{ steps.project.outputs.args }} -scheme Unity-iPhone -configuration Release \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGNING_ALLOWED=NO build
+          APP=$(find "$RUNNER_TEMP/dd/Build/Products/Release-iphonesimulator" -maxdepth 1 -name '*.app' | head -n1)
+          [ -n "$APP" ] || { echo "::error::No .app was produced"; exit 1; }
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          (cd "$(dirname "$APP")" && zip -qry "$GITHUB_WORKSPACE/out/Borderline-$TAG-simulator.zip" "$(basename "$APP")")
+          ls -la "$GITHUB_WORKSPACE/out"
+
+      # ── signed: archive and export an .ipa ──
+      - name: Install signing certificate and profile
+        if: needs.xcodeProject.outputs.signed == 'true'
+        id: install
+        env:
+          P12: ${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASS=$(openssl rand -hex 16)
+          printf '%s' "$P12" | base64 -D > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASS" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+          printf '%s' "$PROFILE" | base64 -D > "$RUNNER_TEMP/profile.mobileprovision"
+          security cms -D -i "$RUNNER_TEMP/profile.mobileprovision" > "$RUNNER_TEMP/profile.plist"
+          UUID=$(/usr/libexec/PlistBuddy -c 'Print UUID' "$RUNNER_TEMP/profile.plist")
+          NAME=$(/usr/libexec/PlistBuddy -c 'Print Name' "$RUNNER_TEMP/profile.plist")
+          for DIR in "$HOME/Library/MobileDevice/Provisioning Profiles" "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+            mkdir -p "$DIR"; cp "$RUNNER_TEMP/profile.mobileprovision" "$DIR/$UUID.mobileprovision"
+          done
+          echo "profile_name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "keychain=$KEYCHAIN" >> "$GITHUB_OUTPUT"
+          echo "Installed provisioning profile: $NAME"
+
+      - name: Archive and export .ipa
+        if: needs.xcodeProject.outputs.signed == 'true'
+        working-directory: xcode
+        env:
+          TAG: ${{ needs.xcodeProject.outputs.tag }}
+          BUNDLE_ID: ${{ needs.xcodeProject.outputs.bundle }}
+          TEAM: ${{ secrets.IOS_TEAM_ID }}
+          IDENTITY_SECRET: ${{ secrets.IOS_CODE_SIGN_IDENTITY }}
+          METHOD: ${{ inputs.export_method }}
+          PROFILE_NAME: ${{ steps.install.outputs.profile_name }}
+        run: |
+          set -euo pipefail
+          if [ -n "$IDENTITY_SECRET" ]; then IDENTITY="$IDENTITY_SECRET"
+          elif [ "$METHOD" = "debugging" ]; then IDENTITY="Apple Development"
+          else IDENTITY="Apple Distribution"; fi
+
+          # the profile itself is already set on the app target by Unity (see "Set iOS build settings")
+          xcodebuild ${{ steps.project.outputs.args }} -scheme Unity-iPhone -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="$IDENTITY" archive
+
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>$METHOD</string>
+            <key>teamID</key><string>$TEAM</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>$IDENTITY</string>
+            <key>provisioningProfiles</key><dict><key>$BUNDLE_ID</key><string>$PROFILE_NAME</string></dict>
+            <key>compileBitcode</key><false/>
+          </dict></plist>
+          PLIST
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/App.xcarchive" -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" -exportPath "$RUNNER_TEMP/export"
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          IPA=$(find "$RUNNER_TEMP/export" -name '*.ipa' | head -n1)
+          [ -n "$IPA" ] || { echo "::error::No .ipa was produced"; exit 1; }
+          cp "$IPA" "$GITHUB_WORKSPACE/out/Borderline-$TAG.ipa"
+          ls -la "$GITHUB_WORKSPACE/out"
+
+      - name: Remove signing keychain
+        if: always() && steps.install.outputs.keychain != ''
+        run: security delete-keychain "${{ steps.install.outputs.keychain }}" || true
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Borderline-iOS-${{ needs.xcodeProject.outputs.tag }}
+          path: out/*
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.xcodeProject.outputs.tag }}
+          VERSION: ${{ needs.xcodeProject.outputs.version }}
+          CODE: ${{ needs.xcodeProject.outputs.code }}
+          SIGNED: ${{ needs.xcodeProject.outputs.signed }}
+          METHOD: ${{ inputs.export_method }}
+        run: |
+          if [ "$SIGNED" = "true" ]; then
+            HOW="Signed .ipa ($METHOD export). Install on registered devices, or upload to App Store Connect with Transporter for TestFlight."
+          else
+            HOW="Simulator build: unzip and drag the app onto a running iOS Simulator (Xcode on a Mac). It doesn't install on an iPhone."
+          fi
+          NOTES="Borderline v$VERSION (build $CODE) for iOS.
+          Built from ${GITHUB_SHA::7} by run #${{ github.run_number }}.
+
+          $HOW"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" out/* --clobber
+            gh release edit "$TAG" --notes "$NOTES"
+            # move the tag to this commit, so the next run compares against what this build was made from
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true > /dev/null
+          else
+            gh release create "$TAG" out/* --title "Borderline iOS v$VERSION (build $CODE)" --notes "$NOTES" --target "$GITHUB_SHA" --prerelease
+          fi

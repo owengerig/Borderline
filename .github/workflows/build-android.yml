@@ -1,0 +1,196 @@
+# Builds the Android APK in the cloud with GameCI and publishes it as a GitHub Release.
+#
+# One-time setup (repo Settings → Secrets and variables → Actions → New repository secret):
+#   UNITY_LICENSE                   contents of your Unity license file (Personal: C:\ProgramData\Unity\Unity_lic.ulf)
+#   UNITY_EMAIL, UNITY_PASSWORD     your Unity account (GameCI re-activates the license with them)
+#   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASS, ANDROID_KEYALIAS_NAME, ANDROID_KEYALIAS_PASS
+#                                   the game's signing keystore (optional; see the technical README, "Signing")
+#
+# Release: tagged v<version>-build<build> (from Player Settings, see Project Settings → Player). Building the same version
+# again replaces the APK in that release, so raise the version / build number for a new release.
+#
+# Skips unneeded builds: the "check" job compares this commit with the commit the latest release was built from
+# (its tag). If nothing that goes into the APK changed (Assets/, Packages/, ProjectSettings/), it stops in a few
+# seconds without building. Tick "Build even if nothing changed" when running the workflow to build anyway.
+
+name: Build Android APK
+
+# manual only: Actions tab → "Build Android APK" → Run workflow
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build even if nothing changed since the latest release
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # to create the release
+
+concurrency:
+  group: android-build
+  cancel-in-progress: true
+
+jobs:
+  # Is a new APK needed? (a few seconds)
+  check:
+    name: Check for changes
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - name: Checkout repository (with history and tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compare with the latest release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          if [ "$FORCE" = "true" ]; then
+            echo "Build forced."; echo "build=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Android releases only (iOS ones are tagged ios-…)
+          LAST=$(gh release list --exclude-drafts --limit 100 --json tagName --jq '[.[] | select(.tagName | startswith("v"))][0].tagName // empty' 2>/dev/null || true)
+          if [ -z "$LAST" ] || ! git rev-parse -q --verify "refs/tags/$LAST" > /dev/null; then
+            echo "No earlier release found: building."; echo "build=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          BUILT=$(git rev-list -n 1 "refs/tags/$LAST")
+          echo "Latest release: $LAST, built from ${BUILT::7}; this run: ${GITHUB_SHA::7}"
+          CHANGED=$(git diff --name-only "$BUILT" "$GITHUB_SHA" -- Assets Packages ProjectSettings)
+          if [ -z "$CHANGED" ]; then
+            echo "::notice title=No new APK needed::Nothing in Assets/, Packages/ or ProjectSettings/ changed since $LAST. Run again with 'Build even if nothing changed' to build anyway."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Changed since $LAST:"; echo "$CHANGED" | head -50
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  buildForAndroid:
+    name: Build Android APK
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # The Unity Android image is huge (about 15 GB unpacked) and the runner's one disk is shared by everything,
+      # swap included: remove what this job doesn't use (the slow "large packages" removal stays off).
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          swap-storage: false
+
+      # The runner has under 8 GB of memory and IL2CPP needs more: without swap the machine runs out and GitHub
+      # stops it mid-build ("The runner has received a shutdown signal"). 6 GB of swap: it lives on the same disk as
+      # everything else, and a bigger file left too little room for Unity (ENOSPC).
+      - name: Add swap space
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 6G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+          df -h / /mnt
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check the Unity project settings are in git
+        run: |
+          if [ ! -f ProjectSettings/ProjectSettings.asset ] || [ ! -f ProjectSettings/ProjectVersion.txt ]; then
+            echo "::error::ProjectSettings/ isn't in the repo yet. Open the project in Unity, set it up as SETUP.md describes (bundle ID com.ogsoftware.borderline, version 0.1.0), then commit ProjectSettings/ and Packages/."
+            exit 1
+          fi
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(grep -m1 '^  bundleVersion:' ProjectSettings/ProjectSettings.asset | awk '{print $2}')
+          CODE=$(grep -m1 'AndroidBundleVersionCode:' ProjectSettings/ProjectSettings.asset | awk '{print $2}')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION-build$CODE" >> "$GITHUB_OUTPUT"
+          echo "Version $VERSION, build $CODE"
+
+      # Library (imported assets, compiled scripts, IL2CPP cache) makes later builds much faster. It's restored here
+      # and saved at the end even when the build fails, so the next run doesn't start from scratch.
+      - name: Restore Unity Library
+        uses: actions/cache/restore@v4
+        with:
+          path: Library
+          key: Library-Android-${{ github.run_id }}
+          restore-keys: |
+            Library-Android-
+
+      - name: Build with Unity
+        id: build
+        uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          targetPlatform: Android
+          androidExportType: androidPackage
+          buildName: Borderline
+          # keep the game's own version numbers (Player Settings) instead of GameCI's git-based ones
+          versioning: Custom
+          version: ${{ steps.version.outputs.version }}
+          androidVersionCode: ${{ steps.version.outputs.code }}
+          # Sign with the game's own keystore when its secrets are set, so cloud and local builds can update each
+          # other on a device. Without them, GameCI signs with a throwaway debug key (uninstall first to install).
+          androidKeystoreName: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && 'borderline.keystore' || '' }}
+          androidKeystoreBase64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          androidKeystorePass: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          androidKeyaliasName: ${{ secrets.ANDROID_KEYALIAS_NAME }}
+          androidKeyaliasPass: ${{ secrets.ANDROID_KEYALIAS_PASS }}
+
+      - name: Save Unity Library
+        if: always() && steps.build.outcome != 'skipped'
+        uses: actions/cache/save@v4
+        with:
+          path: Library
+          key: Library-Android-${{ github.run_id }}
+
+      - name: Find the APK
+        id: apk
+        run: |
+          APK=$(find build -name '*.apk' | head -n1)
+          [ -n "$APK" ] || { echo "::error::No APK was produced"; exit 1; }
+          NAME="Borderline-${{ steps.version.outputs.tag }}.apk"
+          cp "$APK" "$NAME"
+          echo "file=$NAME" >> "$GITHUB_OUTPUT"
+          ls -la "$NAME"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Borderline-Android-${{ steps.version.outputs.tag }}
+          path: ${{ steps.apk.outputs.file }}
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          APK: ${{ steps.apk.outputs.file }}
+        run: |
+          NOTES="Borderline v${{ steps.version.outputs.version }} (build ${{ steps.version.outputs.code }}) for Android.
+          Built from ${GITHUB_SHA::7} by run #${{ github.run_number }}.
+
+          Install: download the APK on the device and open it (allow installs from this source when asked)."
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --clobber
+            gh release edit "$TAG" --notes "$NOTES"
+            # move the tag to this commit, so the next run compares against what this APK was built from
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/$TAG" -f sha="$GITHUB_SHA" -F force=true > /dev/null
+          else
+            gh release create "$TAG" "$APK" --title "Borderline v${{ steps.version.outputs.version }} (build ${{ steps.version.outputs.code }})" --notes "$NOTES" --target "$GITHUB_SHA"
+          fi
