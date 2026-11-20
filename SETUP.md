@@ -1,10 +1,11 @@
-# Borderline – Prototype Setup (v0.0.1)
+# Borderline – Prototype Setup (v0.1.0)
 
 A self-contained hex-grid prototype of the core loop: claim, reinforce, attack, fortify by dwelling, and fight an AI rival. There's no map or GPS yet; see `ROADMAP_GPS_OSM.md` for that.
 
 ```
 Assets/Borderline/Scripts/
   Core/      HexCoord.cs  HexMesh.cs  GameTypes.cs  AppInfo.cs
+  Platform/  GameServices.cs (profile, achievements, leaderboards, cloud save)
   Grid/      HexGridManager.cs  HexTile.cs  PresenceMarker.cs
   Gameplay/  GameManager.cs  RivalAI.cs  Combat.cs
   Input/     CameraController.cs
@@ -35,7 +36,8 @@ Unity Hub won't create a project in a folder that already has files in it (this 
 |---|---|
 | Company Name | `OG Software` |
 | Product Name | `Borderline` |
-| **Version** | **`0.0.1`** (this is what the in-game footer shows) |
+| **Version** | **`0.1.0`** (the footer shows `Created by OG Software v0.1.0`, like every OG Software app) |
+| Package / Bundle ID (Android + iOS) | `com.ogsoftware.borderline` (the Game Center / Play Games IDs in `GAME_SERVICES.md` use it) |
 | Default Orientation (Resolution and Presentation) | Portrait |
 | Other Settings > Active Input Handling | `Input System Package (New)` or `Both` |
 
@@ -129,3 +131,11 @@ The time is stored per hex, so returning to "home" picks up where the ramp left 
 - **Taps do nothing / Input System errors in the Console:** Set *Active Input Handling* to `Input System Package (New)` or `Both`, then let Unity restart.
 - **Taps go through buttons onto the map:** Make sure only one EventSystem exists. The HUD creates one if there's none.
 - **"Scene couldn't be loaded" on Play again:** Add `Main` to Build Profiles (step 6.7).
+
+## Game Center / Google Play Games
+
+Shared OG Software code lives in `Assets/OGPlatform` with native bridges in `Assets/Plugins/iOS/OGPlatform` and
+`Assets/Plugins/Android/OGPlatform`; Borderline's part is `Scripts/Platform/GameServices.cs`. It keeps a lifetime
+profile (matches, wins, hexes claimed / captured, turrets, fastest win), backs it up to Game Center / Play Games saved
+games, and drives 7 achievements and 2 leaderboards. The Xcode and Gradle setup is added at build time. Store setup:
+[`GAME_SERVICES.md`](GAME_SERVICES.md).

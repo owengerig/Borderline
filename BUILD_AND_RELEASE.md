@@ -12,14 +12,14 @@ Store requirements as of Nov 2026:
 
 | Field | Where | Value |
 |---|---|---|
-| Version (shown in-game) | Player > Version | `0.0.1`, then bump to `0.0.2`, `0.1.0`… for each release |
+| Version (shown in-game) | Player > Version | `0.1.0` (all OG Software apps start here), then `0.1.1`, `0.2.0`… for each release |
 | Android Bundle Version Code | Player > Android > Other Settings | `1`, **+1 on every upload** to Play |
 | iOS Build | Player > iOS > Other Settings | `1`, **+1 on every upload** to App Store Connect |
-| Package / Bundle ID | Player > Other Settings (both platforms) | e.g. `com.ogsoftware.borderline`, which can never change after the first upload |
+| Package / Bundle ID | Player > Other Settings (both platforms) | `com.ogsoftware.borderline` (Game Center / Play Games IDs use it), which can never change after the first upload |
 | Privacy Policy URL | Store listings | https://sites.google.com/view/og-software/privacy-policy |
 | Support URL | Store listings | https://sites.google.com/view/og-software/support |
 
-Suggested Git branches: `main` (always shippable), `develop` (daily work), and feature branches. Tag each store upload, e.g. `v0.0.1-build1`.
+Suggested Git branches: `main` (always shippable), `develop` (daily work), and feature branches. Tag each store upload, e.g. `v0.1.0-build1`.
 
 ---
 
@@ -106,7 +106,8 @@ For iOS: one job on `ubuntu-latest` with `targetPlatform: iOS` exports the Xcode
 
 Pre-submission checklist for every release:
 - [ ] Version and both build numbers bumped
-- [ ] Footer shows the right version (`Creator OG Software v…`)
+- [ ] Footer shows the right version (`Created by OG Software v…`)
+- [ ] Game Center / Play Games achievements and leaderboards created (`GAME_SERVICES.md`)
 - [ ] Privacy / Support links open correctly
 - [ ] Privacy policy updated if any new data is collected (location!)
 - [ ] Tested on a small phone, a notched iPhone and a tablet (safe area)

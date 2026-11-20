@@ -18,7 +18,7 @@ Replace the 15×15 board with a global hex index, e.g. **Uber H3**:
 
 ## 3. Server (must be authoritative before any real players)
 
-Ownership, garrisons and dwell time live on a server, never on the phone. Options include Unity Gaming Services (Cloud Code + Cloud Save), Firebase, Nakama, or Supabase/PostGIS.
+Ownership, garrisons and dwell time live on a server, never on the phone. Options include Unity Gaming Services (Cloud Code + Cloud Save), Nakama, or Supabase/PostGIS. (Game Center / Play Games already keep the player's profile, achievements and leaderboards; they can't hold shared map state.)
 
 - The client sends a check-in (`cellId`, timestamp, accuracy) and the server decides what it means.
 - **Anti-spoofing:** Detect mock locations (Android), reject impossible travel speeds, rate-limit actions, and credit dwell only after plausible repeated check-ins.

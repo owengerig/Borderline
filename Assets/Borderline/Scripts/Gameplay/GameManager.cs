@@ -66,6 +66,7 @@ namespace Borderline
 
         PresenceMarker playerMarker;
         float turretTimer;
+        float matchTime;
         readonly List<HexTile> neighborBuffer = new List<HexTile>(6);
 
         // ------------------------------------------------------------------ lifecycle
@@ -94,6 +95,10 @@ namespace Borderline
                 return;
             }
 
+            // Game Center / Google Play Games: sign-in, achievements, leaderboards, cloud copy of the profile
+            try { GameServices.Init(); }
+            catch (Exception e) { Debug.LogError("[Borderline] game services: " + e); }
+
             grid.Generate();
             playerEnergy.Reset();
 
@@ -120,13 +125,17 @@ namespace Borderline
         {
             if (IsGameOver) return;
             float dt = Time.deltaTime;
+            matchTime += dt;
 
             playerEnergy.Tick(dt);
 
             if (PlayerPresence != null && PlayerPresence.OwnerID == Owner.Player)
             {
                 if (PlayerPresence.TickPresence(dt, dwell))
+                {
                     RaiseToast("Your crew built a turret where you're standing.");
+                    GameServices.TurretBuilt();
+                }
             }
 
             turretTimer += dt;
@@ -162,7 +171,7 @@ namespace Borderline
         {
             switch (TryClaim(Owner.Player, playerEnergy, tile))
             {
-                case ActionResult.Ok: tile.Flash(ClaimFlash); break;
+                case ActionResult.Ok: tile.Flash(ClaimFlash); GameServices.HexClaimed(); break;
                 case ActionResult.NotAdjacent: RaiseToast("You can only claim hexes that border your territory."); break;
                 case ActionResult.NotEnoughEnergy: RaiseToast($"Need {claimCost} energy to claim."); break;
             }
@@ -195,6 +204,7 @@ namespace Borderline
                     if (r.Captured)
                     {
                         tile.Flash(ClaimFlash);
+                        GameServices.HexCaptured();
                         RaiseToast($"Captured! {r.AttackPower} attack{support} vs {r.EffectiveDefense:0.#} defence. {r.Survivors} troops hold it.");
                     }
                     else
@@ -288,7 +298,15 @@ namespace Borderline
             IsGameOver = true;
             PlayerWon = playerWon;
             PlacingPresence = false;
+            GameServices.Played(matchTime);
+            GameServices.MatchEnded(playerWon, matchTime);
             GameEnded?.Invoke(playerWon);
+        }
+
+        // progress made mid-match (claims, captures) is saved when the app goes to the background
+        void OnApplicationPause(bool paused)
+        {
+            if (paused && !IsGameOver) GameServices.Save();
         }
 
         public void Restart() => SceneManager.LoadScene(SceneManager.GetActiveScene().name);
