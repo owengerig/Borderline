@@ -29,6 +29,11 @@ Unity Hub won't create a project in a folder that already has files in it (this 
 2. Close Unity. Copy the `Assets`, `Packages` and `ProjectSettings` folders from `Borderline_tmp` into `C:\Users\oweng\Borderline`. `Assets` merges with the `Assets/Borderline` folder that's already there.
 3. In Hub, choose **Add > Add project from disk** and pick `C:\Users\oweng\Borderline`. Open it, and then you can delete `Borderline_tmp`.
 
+**Render pipeline:** Borderline uses URP with the 2D Renderer (Unity 6.5+ deprecates the Built-in pipeline). This is
+automatic: `Assets/Settings/Rendering/Editor/URPSetup.cs` installs the URP package if it's missing and makes
+`Assets/Settings/Rendering/RenderPipeline.asset` (2D Renderer) the pipeline in Graphics settings and every Quality
+level the first time the project opens. Check it any time with **OG Software > Render Pipeline > Check URP Setup**.
+
 ## 3. One-time project settings
 
 **Edit > Project Settings > Player**
@@ -47,9 +52,8 @@ Unity Hub won't create a project in a folder that already has files in it (this 
 
 1. Right-click `Assets/Borderline`, choose **Create > Folder**, and name it `Materials`.
 2. In that folder, choose **Create > Material** and name it `HexMaterial`.
-3. Set the shader:
-   - URP project (Universal 2D template): `Universal Render Pipeline/2D/Sprite-Unlit-Default`
-   - Built-in pipeline: `Sprites/Default`
+3. Set the shader to `Universal Render Pipeline/2D/Sprite-Unlit-Default`. (If an older `HexMaterial` uses
+   `Sprites/Default` from the Built-in pipeline days, switch it to this one.)
 
    The tiles are colored through vertex colors, so leave the material's color white.
 
