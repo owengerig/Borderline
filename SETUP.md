@@ -46,6 +46,10 @@ level the first time the project opens. Check it any time with **OG Software > R
 | Default Orientation (Resolution and Presentation) | Portrait |
 | Other Settings > Active Input Handling | `Input System Package (New)` or `Both` |
 
+**App icon:** automatic. `Assets/Branding/` has `AppIcon.png` (1024×1024, opaque, for iOS and as the default) and the
+Android adaptive layers; `Assets/Branding/Editor/AppIconSetup.cs` sets them in Player Settings the first time the
+project opens (or use **OG Software > Apply App Icons**). Commit `ProjectSettings/` afterwards.
+
 **TextMeshPro:** Choose **Window > TextMeshPro > Import TMP Essential Resources**. If you skip this, labels won't render.
 
 ## 4. Create the hex material
