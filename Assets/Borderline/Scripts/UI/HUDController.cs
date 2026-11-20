@@ -15,7 +15,7 @@ namespace Borderline
     ///  top bar     - Energy count + bar, Territory % for both sides
     ///  status line - your location hex, dwell time and wall growth rate
     ///  bottom      - build selector (Troops / Vehicle / Turret), attack strength (25/50/100%), Set Location
-    ///  footer      - "Creator OG Software  v0.0.1" + Privacy / Support links
+    ///  footer      - "Created by OG Software v0.1.0" + Achievements / Leaderboards / Privacy / Support links
     ///  overlays    - toast messages, victory / defeat panel with Restart
     /// Respects the device safe area (notches, home indicator).
     /// </summary>
@@ -247,8 +247,11 @@ namespace Borderline
 
             TextMeshProUGUI credit = NewText(footer, "Credit", AppInfo.CreditLine, 24, TextAlignmentOptions.Left, MutedText);
             Stretch(credit.rectTransform);
-            SetOffsets(credit.rectTransform, 30f, 0f, -300f, 0f);
+            SetOffsets(credit.rectTransform, 30f, 0f, -650f, 0f);
 
+            // Game Center / Google Play Games (sign in first if needed)
+            NewLink(footer, "Achievements", () => OGSoftware.Platform.OGPlatform.ShowAchievements(), -470f, 170f);
+            NewLink(footer, "Leaderboards", () => OGSoftware.Platform.OGPlatform.ShowLeaderboard(), -285f, 170f);
             NewLink(footer, "Privacy", AppInfo.PrivacyPolicyUrl, -150f);
             NewLink(footer, "Support", AppInfo.SupportUrl, -20f);
         }
@@ -401,16 +404,21 @@ namespace Borderline
 
         void NewLink(Transform parent, string label, string url, float rightEdge)
         {
+            NewLink(parent, label, () => Application.OpenURL(url), rightEdge, 120f);
+        }
+
+        void NewLink(Transform parent, string label, UnityAction onClick, float rightEdge, float width)
+        {
             RectTransform rt = NewRect(label, parent);
             SetAnchors(rt, new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(1f, 0.5f));
-            rt.sizeDelta = new Vector2(120f, 0f);
+            rt.sizeDelta = new Vector2(width, 0f);
             rt.anchoredPosition = new Vector2(rightEdge, 0f);
 
             var hit = rt.gameObject.AddComponent<Image>();
             hit.color = new Color(0f, 0f, 0f, 0f); // invisible, but catches taps
             var button = rt.gameObject.AddComponent<Button>();
             button.targetGraphic = hit;
-            button.onClick.AddListener(() => Application.OpenURL(url));
+            button.onClick.AddListener(onClick);
 
             TextMeshProUGUI t = NewText(rt, "Label", $"<u>{label}</u>", 24, TextAlignmentOptions.Right, MutedText);
             Stretch(t.rectTransform);
