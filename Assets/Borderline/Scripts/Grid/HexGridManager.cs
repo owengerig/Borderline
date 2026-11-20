@@ -21,7 +21,7 @@ namespace Borderline
         [Header("Prefab & Material")]
         [Tooltip("Optional. If empty, tiles are created from scratch.")]
         [SerializeField] HexTile tilePrefab;
-        [Tooltip("Material using 'Sprites/Default' (Built-in) or 'Sprite-Unlit-Default' (URP).")]
+        [Tooltip("Material using 'Universal Render Pipeline/2D/Sprite-Unlit-Default'.")]
         [SerializeField] Material tileMaterial;
 
         static readonly float Sqrt3 = Mathf.Sqrt(3f);
@@ -44,8 +44,9 @@ namespace Borderline
             {
                 if (tileMaterial == null)
                 {
-                    var shader = Shader.Find("Sprites/Default");
-                    if (shader == null) shader = Shader.Find("Universal Render Pipeline/2D/Sprite-Unlit-Default");
+                    // URP (2D Renderer): the project's pipeline. Sprites/Default is only a last-resort fallback.
+                    var shader = Shader.Find("Universal Render Pipeline/2D/Sprite-Unlit-Default");
+                    if (shader == null) shader = Shader.Find("Sprites/Default");
                     tileMaterial = new Material(shader) { name = "Hex (runtime)" };
                 }
                 return tileMaterial;

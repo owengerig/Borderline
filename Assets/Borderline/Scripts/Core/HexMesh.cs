@@ -4,8 +4,8 @@ namespace Borderline
 {
     /// <summary>
     /// Builds simple pointy-top hex meshes in code so the prototype needs no sprite art.
-    /// Colours are written as vertex colours, which both "Sprites/Default" (Built-in)
-    /// and "Universal Render Pipeline/2D/Sprite-Unlit-Default" (URP) multiply in.
+    /// Colours are written as vertex colours, which "Universal Render Pipeline/2D/Sprite-Unlit-Default"
+    /// (and the legacy "Sprites/Default") multiply in.
     /// </summary>
     public static class HexMesh
     {
